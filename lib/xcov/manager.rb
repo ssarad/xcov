@@ -8,6 +8,7 @@ require 'xcov-core'
 require 'pathname'
 require 'json'
 require 'xcresult'
+require 'shellwords' # Added for path escaping
 
 module Xcov
   class Manager
@@ -213,16 +214,17 @@ module Xcov
     end
 
     def process_xcresults!(xcresult_paths)
-      xcresult_paths.compact.map { |path| File.expand_path(path) }
+      xcresult_paths = xcresult_paths.compact.map { |path| File.expand_path(path) }
       output_path = File.expand_path(Xcov.config[:output_directory])
       FileUtils.mkdir_p(output_path)
       
       result_path = ""
       index = 0
       
-      xcresult_paths.flat_map do |xcresult_path|
+      xcresult_paths.each do |xcresult_path|
         begin
-          parser = XCResult::Parser.new(path: File.expand(xcresult_path))
+          # Fix: Use expand_path instead of non-existent expand
+          parser = XCResult::Parser.new(path: File.expand_path(xcresult_path))
           
           # Exporting to same directory as xcresult
           tmp_archive_paths = parser.export_xccovarchives(destination: output_path)
@@ -234,10 +236,10 @@ module Xcov
             File.rename(item, "#{output_path}/xccovreport-#{index + i}.xccovreport")
             index += 1
           end
-        rescue
-          UI.error("Error occured while exporting xccovreport from xcresult '#{xcresult_path}'")
+        rescue => e
+          UI.error("Error occured while exporting xccovreport from xcresult '#{xcresult_path}': #{e.message}")
           UI.error("Make sure you have both Xcode 11 selected and pointing to the correct xcresult file")
-          UI.crash!("Failed to export xccovreport from xcresult'")
+          UI.crash!("Failed to export xccovreport from xcresult")
         end
       end
       
@@ -247,14 +249,20 @@ module Xcov
           
       # Merge coverage reports
       if report_paths.length > 1 then 
-        # Creating array of paths for merging
-        paths = ""
-        for i in 0..report_paths.length
-          paths += " #{report_paths[i]} #{archive_paths[i]}"
+        # Fix: Create escaped paths string for merging
+        paths_args = []
+        report_paths.each_with_index do |report, i|
+           paths_args << report.shellescape
+           paths_args << archive_paths[i].shellescape
         end
+        paths = paths_args.join(" ")
             
-        UI.important("Merging multiple coverage reports with #{paths}") 
-        if system ( "xcrun xccov merge --outReport #{output_path}/out.xccovreport --outArchive #{output_path}/out.xccovarchive #{paths}" ) then
+        UI.important("Merging multiple coverage reports...") 
+        
+        out_report = "#{output_path}/out.xccovreport".shellescape
+        out_archive = "#{output_path}/out.xccovarchive".shellescape
+
+        if system("xcrun xccov merge --outReport #{out_report} --outArchive #{out_archive} #{paths}") then
           result_path = "#{output_path}/out.xccovreport"
         else
           UI.error("Error occured during merging multiple coverage reports")
