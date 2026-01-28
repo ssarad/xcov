@@ -213,7 +213,7 @@ module Xcov
     end
 
     def process_xcresults!(xcresult_paths)
-      xcresult_paths.map! { |path| File.expand_path(path) }
+      xcresult_paths.compact.map { |path| File.expand_path(path) }
       output_path = File.expand_path(Xcov.config[:output_directory])
       FileUtils.mkdir_p(output_path)
       
@@ -222,7 +222,7 @@ module Xcov
       
       xcresult_paths.flat_map do |xcresult_path|
         begin
-          parser = XCResult::Parser.new(path: xcresult_path)
+          parser = XCResult::Parser.new(path: File.expand(xcresult_path))
           
           # Exporting to same directory as xcresult
           tmp_archive_paths = parser.export_xccovarchives(destination: output_path)
