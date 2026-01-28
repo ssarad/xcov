@@ -214,7 +214,7 @@ module Xcov
 
     def process_xcresults!(xcresult_paths)
       xcresult_paths.map! { |path| File.expand_path(path) }
-      output_path = Xcov.config[:output_directory]
+      output_path = File.expand_path(Xcov.config[:output_directory])
       FileUtils.mkdir_p(output_path)
       
       result_path = ""
