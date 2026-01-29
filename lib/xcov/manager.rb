@@ -8,7 +8,7 @@ require 'xcov-core'
 require 'pathname'
 require 'json'
 require 'xcresult'
-require 'shellwords' # Added for path escaping
+require 'shellwords' # Added for safe path escaping
 
 module Xcov
   class Manager
@@ -214,6 +214,7 @@ module Xcov
     end
 
     def process_xcresults!(xcresult_paths)
+      # Ensure paths are absolute and clean
       xcresult_paths = xcresult_paths.compact.map { |path| File.expand_path(path) }
       output_path = File.expand_path(Xcov.config[:output_directory])
       FileUtils.mkdir_p(output_path)
@@ -223,54 +224,75 @@ module Xcov
       
       xcresult_paths.each do |xcresult_path|
         begin
-          # Fix: Use expand_path instead of non-existent expand
-          parser = XCResult::Parser.new(path: File.expand_path(xcresult_path))
+          # Use expand_path, not expand
+          parser = XCResult::Parser.new(path: xcresult_path)
           
           # Exporting to same directory as xcresult
           tmp_archive_paths = parser.export_xccovarchives(destination: output_path)
           tmp_report_paths = parser.export_xccovreports(destination: output_path)
 
           # Rename each file with global index
-          tmp_report_paths.each_with_index do |item, i|
-            File.rename(tmp_archive_paths[i], "#{output_path}/xccovarchive-#{index + i}.xccovarchive")
-            File.rename(item, "#{output_path}/xccovreport-#{index + i}.xccovreport")
+          tmp_report_paths.each_with_index do |report_path, i|
+            archive_path = tmp_archive_paths[i]
+            
+            # Guard: Only rename if the archive path exists and is not nil
+            if archive_path && File.exist?(archive_path)
+              File.rename(archive_path, File.join(output_path, "xccovarchive-#{index + i}.xccovarchive"))
+            end
+
+            # Guard: Only rename if the report path exists and is not nil
+            if report_path && File.exist?(report_path)
+              File.rename(report_path, File.join(output_path, "xccovreport-#{index + i}.xccovreport"))
+            end
+            
             index += 1
           end
         rescue => e
-          UI.error("Error occured while exporting xccovreport from xcresult '#{xcresult_path}': #{e.message}")
-          UI.error("Make sure you have both Xcode 11 selected and pointing to the correct xcresult file")
+          UI.error("Error occurred while exporting xccovreport from xcresult '#{xcresult_path}'")
+          UI.error("Details: #{e.message}")
+          UI.error(e.backtrace.join("\n"))
+          # Continue to next xcresult or fail depending on severity. 
+          # Typically we crash if we can't get coverage, but this allows debugging.
           UI.crash!("Failed to export xccovreport from xcresult")
         end
       end
       
-      # Grab paths from the directory instead of parser
-      report_paths = Dir["#{output_path}/*.xccovreport"]
-      archive_paths = Dir["#{output_path}/*.xccovarchive"]
+      # Grab paths from the directory
+      report_paths = Dir[File.join(output_path, "*.xccovreport")].sort
+      archive_paths = Dir[File.join(output_path, "*.xccovarchive")].sort
           
       # Merge coverage reports
-      if report_paths.length > 1 then 
-        # Fix: Create escaped paths string for merging
+      if report_paths.length > 1
         paths_args = []
-        report_paths.each_with_index do |report, i|
-           paths_args << report.shellescape
-           paths_args << archive_paths[i].shellescape
-        end
-        paths = paths_args.join(" ")
-            
-        UI.important("Merging multiple coverage reports...") 
         
-        out_report = "#{output_path}/out.xccovreport".shellescape
-        out_archive = "#{output_path}/out.xccovarchive".shellescape
+        # safely pair reports and archives
+        report_paths.each_with_index do |report, i|
+           archive = archive_paths[i]
+           if archive && File.exist?(archive)
+             paths_args << report.shellescape
+             paths_args << archive.shellescape
+           end
+        end
 
-        if system("xcrun xccov merge --outReport #{out_report} --outArchive #{out_archive} #{paths}") then
-          result_path = "#{output_path}/out.xccovreport"
+        if paths_args.empty?
+          UI.error("No valid report/archive pairs found to merge.")
         else
-          UI.error("Error occured during merging multiple coverage reports")
+          paths = paths_args.join(" ")
+              
+          UI.important("Merging multiple coverage reports...") 
+          out_report = File.join(output_path, "out.xccovreport").shellescape
+          out_archive = File.join(output_path, "out.xccovarchive").shellescape
+
+          if system("xcrun xccov merge --outReport #{out_report} --outArchive #{out_archive} #{paths}")
+            result_path = File.join(output_path, "out.xccovreport")
+          else
+            UI.error("Error occurred during merging multiple coverage reports")
+          end
         end
       end
 
-      if result_path == "" then
-        # Informating user of export paths
+      if result_path == "" || result_path.nil?
+        # Inform user of export paths
         archive_paths.each do |path|
           UI.important("Copying .xccovarchive to #{path}") 
         end
@@ -278,7 +300,6 @@ module Xcov
           UI.important("Copying .xccovreport to #{path}") 
         end
             
-        # Return array of report_paths if coverage reports were not merged
         return report_paths
       else
         # Return merged xccovreport
